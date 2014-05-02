@@ -1,0 +1,6 @@
+[submodule "pycoin"]
+	path = pycoin
+	url = https://github.com/ngburke/pycoin
+[submodule "pollycom"]
+	path = pollycom
+	url = https://github.com/ngburke/pollycom

@@ -34,16 +34,16 @@ import random
 import hashlib
 import binascii
 
-from pollycom.pollycom        import PollyCom        
+from pollycom                       import pollycom
 
 # Pycoin is our reference wallet
-from pycoin.pycoin            import encoding, serialize, ecdsa
-from pycoin.pycoin.tx         import Tx, UnsignedTx, TxOut, SecretExponentSolver
-from pycoin.pycoin.tx.Tx      import SIGHASH_ALL
-from pycoin.pycoin.tx.TxIn    import TxIn
-from pycoin.pycoin.tx.script  import tools, opcodes, der
-from pycoin.pycoin.wallet     import Wallet
-from pycoin.pycoin.ecdsa      import rfc6979
+from pycoin.pycoin                  import encoding
+from pycoin.pycoin.key.bip32        import Wallet
+from pycoin.pycoin.tx               import Spendable
+from pycoin.pycoin.tx.tx_utils      import create_signed_tx, create_tx
+from pycoin.pycoin.tx.TxOut         import standard_tx_out_script
+from pycoin.pycoin.tx.script        import der
+from pycoin.pycoin.ecdsa            import ecdsa, intbytes, secp256k1
 
 class PollyAudit():
     """
@@ -56,7 +56,7 @@ class PollyAudit():
         self.wallet = Wallet.from_master_secret(bytes(0))
         
         # Set up a Polly communication pipe
-        self.polly = PollyCom()
+        self.polly = pollycom.PollyCom()
         
         
     #
@@ -141,6 +141,7 @@ class PollyAudit():
         """
         
         total_in_satoshi = sum(satoshi for _, satoshi in keynums_satoshi) 
+        fee_satoshi      = total_in_satoshi - out_satoshi - change_satoshi
         
         assert total_in_satoshi >= out_satoshi + change_satoshi
         assert len(keynums_satoshi) <= 32
@@ -159,11 +160,11 @@ class PollyAudit():
         print()
         print("Sign tx parameters:", "")
         for i, (keynum, satoshi) in enumerate(keynums_satoshi):
-            print("{:<10}{:16.8f} btc @ key {}".format (" inputs" if 0 == i else "", satoshi / 100000000, keynum))
-        print("{:<10}{:16.8f} btc > {}".format         (" output",                   out_satoshi / 100000000, self.hexstr(out_addr_160)))
-        print("{:<10}{:16.8f} btc > key {}".format     (" change",                   change_satoshi / 100000000, change_keynum))
-        print("{:<10}{:16.8f} btc".format              (" fee",                      (total_in_satoshi - out_satoshi - change_satoshi) / 100000000))
-        print("{:<10}{:16.8f} btc".format              (" total",                    total_in_satoshi/100000000))
+            print("{:<10}{:16.8f} btc @ key {}".format (" inputs" if 0 == i else "", satoshi          / 100000000, keynum))
+        print("{:<10}{:16.8f} btc > {}".format         (" output",                   out_satoshi      / 100000000, self.hexstr(out_addr_160)))
+        print("{:<10}{:16.8f} btc > key {}".format     (" change",                   change_satoshi   / 100000000, change_keynum))
+        print("{:<10}{:16.8f} btc".format              (" fee",                      fee_satoshi      / 100000000))
+        print("{:<10}{:16.8f} btc".format              (" total",                    total_in_satoshi / 100000000))
        
         print()
         print("{:30}".format("Send tx parameters"), end='')
@@ -172,12 +173,13 @@ class PollyAudit():
         self.polly.send_sign_tx(keys, out_addr_160, out_satoshi, change_keynum, change_satoshi) 
 
         print(self.__outok())
-        print()
     
         #
         # Step 2: send previous txs to fund the inputs
         #
     
+        print()
+
         cur = 0
         prevtx_info = []
     
@@ -201,15 +203,16 @@ class PollyAudit():
     
                 # Create output script
                 addr   = self.wallet.subkey(keynum, False, True).bitcoin_address()
-                script = self.create_output_script(addr)
+                script = standard_tx_out_script(addr)
     
                 # Capture some info we'll use later to verify the signed tx
                 prevtx_info.append((keynum, 
-                                   0,                               # This is the hash and will be replaced later
-                                   len(prevtx_outputs_satoshi) - 1, # Index of the valid output
-                                   TxOut(satoshi, script)))
+                                    satoshi,
+                                    script,
+                                    0,                                # This is the hash and will be replaced later
+                                    len(prevtx_outputs_satoshi) - 1)) # Index of the valid output
                 
-            print("{:30}{}".format("Make prev tx for keys", " ".join(str(keynum) for keynum, _, _, _ in prevtx_info[cur:])))
+            print("{:30}{}".format("Make prev tx for keys", " ".join(str(keynum) for (keynum, _, _, _, _) in prevtx_info[cur:])))
             
             # Create the prev tx
             prevtx = self.create_prev_tx(win                 = Wallet.from_master_secret(bytes(0)), # create a dummy wallet 
@@ -223,11 +226,11 @@ class PollyAudit():
             prevtx_hash = encoding.double_sha256(prevtx)[::-1] 
     
             # Update the hashes now that we have a full prev tx
-            for i, (keynum, _, outidx, tx_out) in enumerate(prevtx_info[cur:]) :
-                prevtx_info[i + cur] = (keynum, prevtx_hash, outidx, tx_out)
+            for i, (keynum, satoshi, script, _, outidx) in enumerate(prevtx_info[cur:]) :
+                prevtx_info[i + cur] = (keynum, satoshi, script, prevtx_hash, outidx)
                 
             # Create the index table that matches a keynum index with an ouput index in this prev tx
-            idx_table = [(keynum_idx + cur, outidx) for keynum_idx, (_, _, outidx, _) in enumerate(prevtx_info[cur:])] 
+            idx_table = [(keynum_idx + cur, outidx) for keynum_idx, (_, _, _, _, outidx) in enumerate(prevtx_info[cur:])] 
             
             print("{:30}".format("Send prev tx "), end='')
             
@@ -242,30 +245,24 @@ class PollyAudit():
         # Step 3: generate a signed tx with the reference wallet and compare against Polly's
         #
     
-        input_sources    = []
-        secret_exponents = []
+        spendables = []
+        wifs       = []
         
         # Make sure that the inputs add up correctly, and prep the input_sources for reference wallet signing
-        for (keynum, prevtx_hash, outidx, tx_out) in prevtx_info:
+        for (keynum, satoshi, script, prevtx_hash, outidx) in prevtx_info:
             
-            input_sources.append((prevtx_hash, outidx, tx_out))
-            
-            # Get the reference wallet's secret key
-            secret = self.wallet.subkey(keynum, False, True).wif();
-            secret_exponents.append(encoding.wif_to_secret_exponent(secret))
+            spendables.append(Spendable(satoshi, script, prevtx_hash, outidx))
+            wifs.append(self.wallet.subkey(keynum, False, True).wif())
         
         change_addr = self.wallet.subkey(change_keynum).bitcoin_address()
         
-        coins_to = [(out_satoshi, out_addr), (change_satoshi, change_addr)]
+        payables = [(out_addr, out_satoshi), (change_addr, change_satoshi)]
         
         print()
         print("{:30}".format("Make reference signature"))
     
-        unsigned_tx   = UnsignedTxExt.standard_tx(input_sources, coins_to)
-        solver        = SecretExponentSolver(secret_exponents, deterministic_k = True)
-        signed_tx     = unsigned_tx.sign(solver)
+        signed_tx     = create_signed_tx(spendables, payables, wifs, fee_satoshi)
         signed_tx     = self.get_tx_bytes(signed_tx)
-        
         
         print("{:30}".format("Get signed tx"), end='', flush = True)
         
@@ -294,7 +291,7 @@ class PollyAudit():
         assert m.bitcoin_address()                                == "15mKKb2eos1hWa6tisdPwwDC1a5J1y9nma"
         assert m.wif()                                            == "L52XzL2cMkHxqxBXRyEpnPQZGUs3uKiL3R11XbAdHigRzDozKZeW"
 
-        m0p = m.subkey(is_prime=True)
+        m0p = m.subkey(is_hardened=True)
         assert m0p.wallet_key()                                   == "xpub68Gmy5EdvgibQVfPdqkBBCHxA5htiqg55crXYuXoQRKfDBFA1WEjWgP6LHhwBZeNK1VTsfTFUHCdrfp1bgwQ9xv5ski8PX9rL2dZXvgGDnw"
         assert m0p.wallet_key(as_private=True)                    == "xprv9uHRZZhk6KAJC1avXpDAp4MDc3sQKNxDiPvvkX8Br5ngLNv1TxvUxt4cV1rGL5hj6KCesnDYUhd7oWgT11eZG7XnxHrnYeSvkzY7d2bhkJ7"
 
@@ -302,7 +299,7 @@ class PollyAudit():
         assert m0p1.wallet_key()                                  == "xpub6ASuArnXKPbfEwhqN6e3mwBcDTgzisQN1wXN9BJcM47sSikHjJf3UFHKkNAWbWMiGj7Wf5uMash7SyYq527Hqck2AxYysAA7xmALppuCkwQ"
         assert m0p1.wallet_key(as_private=True)                   == "xprv9wTYmMFdV23N2TdNG573QoEsfRrWKQgWeibmLntzniatZvR9BmLnvSxqu53Kw1UmYPxLgboyZQaXwTCg8MSY3H2EU4pWcQDnRnrVA1xe8fs"
 
-        m0p1_1_2p = m0p1.subkey(i=2, is_prime=True)
+        m0p1_1_2p = m0p1.subkey(i=2, is_hardened=True)
         assert m0p1_1_2p.wallet_key()                             == "xpub6D4BDPcP2GT577Vvch3R8wDkScZWzQzMMUm3PWbmWvVJrZwQY4VUNgqFJPMM3No2dFDFGTsxxpG5uJh7n7epu4trkrX7x7DogT5Uv6fcLW5"
         assert m0p1_1_2p.wallet_key(as_private=True)              == "xprv9z4pot5VBttmtdRTWfWQmoH1taj2axGVzFqSb8C9xaxKymcFzXBDptWmT7FwuEzG3ryjH4ktypQSAewRiNMjANTtpgP4mLTj34bhnZX7UiM"
 
@@ -326,7 +323,7 @@ class PollyAudit():
         assert m0.wallet_key()                                            == "xpub69H7F5d8KSRgmmdJg2KhpAK8SR3DjMwAdkxj3ZuxV27CprR9LgpeyGmXUbC6wb7ERfvrnKZjXoUmmDznezpbZb7ap6r1D3tgFxHmwMkQTPH"
         assert m0.wallet_key(as_private=True)                             == "xprv9vHkqa6EV4sPZHYqZznhT2NPtPCjKuDKGY38FBWLvgaDx45zo9WQRUT3dKYnjwih2yJD9mkrocEZXo1ex8G81dwSM1fwqWpWkeS3v86pgKt"
 
-        m0_2147483647p = m0.subkey(i=2147483647, is_prime=True)
+        m0_2147483647p = m0.subkey(i=2147483647, is_hardened=True)
         assert m0_2147483647p.wallet_key()                                == "xpub6ASAVgeehLbnwdqV6UKMHVzgqAG8Gr6riv3Fxxpj8ksbH9ebxaEyBLZ85ySDhKiLDBrQSARLq1uNRts8RuJiHjaDMBU4Zn9h8LZNnBC5y4a"
         assert m0_2147483647p.wallet_key(as_private=True)                 == "xprv9wSp6B7kry3Vj9m1zSnLvN3xH8RdsPP1Mh7fAaR7aRLcQMKTR2vidYEeEg2mUCTAwCd6vnxVrcjfy2kRgVsFawNzmjuHc2YmYRmagcEPdU9"
 
@@ -334,7 +331,7 @@ class PollyAudit():
         assert m0_2147483647p_1.wallet_key()                              == "xpub6DF8uhdarytz3FWdA8TvFSvvAh8dP3283MY7p2V4SeE2wyWmG5mg5EwVvmdMVCQcoNJxGoWaU9DCWh89LojfZ537wTfunKau47EL2dhHKon"
         assert m0_2147483647p_1.wallet_key(as_private=True)               == "xprv9zFnWC6h2cLgpmSA46vutJzBcfJ8yaJGg8cX1e5StJh45BBciYTRXSd25UEPVuesF9yog62tGAQtHjXajPPdbRCHuWS6T8XA2ECKADdw4Ef"
 
-        m0_2147483647p_1_2147483646p = m0_2147483647p_1.subkey(i=2147483646, is_prime=True)
+        m0_2147483647p_1_2147483646p = m0_2147483647p_1.subkey(i=2147483646, is_hardened=True)
         assert m0_2147483647p_1_2147483646p.wallet_key()                  == "xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL"
         assert m0_2147483647p_1_2147483646p.wallet_key(as_private=True)   == "xprvA1RpRA33e1JQ7ifknakTFpgNXPmW2YvmhqLQYMmrj4xJXXWYpDPS3xz7iAxn8L39njGVyuoseXzU6rcxFLJ8HFsTjSyQbLYnMpCqE2VbFWc"
 
@@ -398,16 +395,15 @@ class PollyAudit():
         
         for (secret_exponent, _, message, _, expected_sig) in test_vectors:
     
-            signature_hash = encoding.from_bytes_32(hashlib.sha256(message.encode('utf-8')).digest())
-        
-            # Use deterministic values of 'k' to prevent problems with RNG attacks - see RFC 6979
-            k = rfc6979.generate_k(ecdsa.generator_secp256k1, secret_exponent, hashlib.sha256, signature_hash.to_bytes(32, 'big'))
-                
-            r, s = ecdsa.sign(ecdsa.generator_secp256k1, secret_exponent, signature_hash, k)
+            h = hashlib.sha256(message.encode('utf-8')).digest()
+            val = intbytes.from_bytes(h)        
+            
+            # This will use deterministic values of k based on 'val'
+            r, s = ecdsa.sign(secp256k1.generator_secp256k1, secret_exponent, val)
                 
             # Ensure that 's' is even to prevent attacks - see https://bitcointalk.org/index.php?topic=285142.msg3295518#msg3295518
-            if s > (ecdsa.generator_secp256k1.order() / 2):
-                s = ecdsa.generator_secp256k1.order() - s
+            if s > (secp256k1.generator_secp256k1.order() / 2):
+                s = secp256k1.generator_secp256k1.order() - s
             
             sig = der.sigencode_der(r, s)
             
@@ -466,32 +462,31 @@ class PollyAudit():
         """
     
         # Calculate the total output
-        coins_to = []
+        payables = []
         total_spent = 0
     
         for (out_key_id, out_satoshi) in out_keynum_satoshi:
     
             address = wout.subkey(out_key_id).bitcoin_address()
-                
+            payables.append((address, out_satoshi))
+            
             total_spent += out_satoshi
-            coins_to.append((out_satoshi, address))
     
         # Split the total to spend across all of the inputs
-        input_sources = []
-        total_value   = 0
+        spendables  = []
+        total_value = 0
     
         satoshi_per_input = int(total_spent + fees_satoshi) / len(in_keynum)
     
         for keynum in in_keynum:
     
             # Grab the address for the current key num
-            addr = win.subkey(keynum, False, True);
-            bca  = addr.bitcoin_address()
+            addr = win.subkey(keynum, False, True).bitcoin_address();
             
             # Generate fake sources for funding the input coin
-            sources = self.fake_sources_for_address(bca, sources_per_input, satoshi_per_input)
-            input_sources.extend(sources)
-            total_value += sum(cs[-1].coin_value for cs in sources)
+            spendables.extend(self.fake_sources_for_address(addr, sources_per_input, satoshi_per_input))
+
+            total_value += satoshi_per_input
        
         # Calculate the fee
         tx_fee = total_value - total_spent
@@ -499,8 +494,8 @@ class PollyAudit():
         assert tx_fee >= 0, "fee < 0: " + str(tx_fee)
     
         # Create and 'sign' the transaction
-        unsigned_tx = UnsignedTxExt.standard_tx(input_sources, coins_to)
-        signed_tx   = unsigned_tx.sign_fake()
+        unsigned_tx = create_tx(spendables, payables, tx_fee)
+        signed_tx   = self.__sign_fake(unsigned_tx)
     
         return self.get_tx_bytes(signed_tx)
 
@@ -515,53 +510,39 @@ class PollyAudit():
         num_sources   - number of sources to fund it with
         total_satoshi - total satoshis to fund 'addr' with 
     
-        Returns a tuple in the form (tx_hash, tx_output_index, tx_out)
-        tx_out is a TxOut object with attributes 'value' and 'script'
+        Returns a list of Spendable objects
         """
     
-        sources = []
+        spendables     = []
         satoshi_left   = total_satoshi
         satoshi_per_tx = satoshi_left / num_sources   
         satoshi_per_tx = int(satoshi_per_tx)
     
         # Create the output script for the input to fund 
-        script = self.create_output_script(addr)
+        script = standard_tx_out_script(addr)
     
         while satoshi_left > 0:
             if satoshi_left < satoshi_per_tx:
                 satoshi_per_tx = satoshi_left
             
-            tx_out = TxOut(satoshi_per_tx, script)
-           
             # Create a random hash value 
-            rand_hash = bytes([random.randint(0,0xFF) for _ in range(0, 32)])
+            rand_hash = bytes([random.randint(0, 0xFF) for _ in range(0, 32)])
     
-            # Create a random output location value 
+            # Create a random output index
             # This field is 32 bits, but typically transactions dont have that many, limit to 0xFF
-            rand_output_num = random.randint(0, 0xFF)
+            rand_output_index = random.randint(0, 0xFF)
     
             # Append the new fake source 
-            source = (rand_hash, rand_output_num, tx_out)
-            sources.append(source)
+            spend = Spendable(satoshi_per_tx, script, rand_hash, rand_output_index)
+            
+            spendables.append(spend)
             
             satoshi_left -= satoshi_per_tx
+            
+        assert satoshi_left == 0, "incorrect funding"
     
-        return sources
+        return spendables
 
-
-    def create_output_script(self, addr) :
-        """
-        Returns a standard output script for a bitcoin address.
-        """
-    
-        STANDARD_SCRIPT_OUT = "OP_DUP OP_HASH160 %s OP_EQUALVERIFY OP_CHECKSIG"
-        
-        hash160     = encoding.bitcoin_address_to_hash160_sec(addr)
-        script_text = STANDARD_SCRIPT_OUT % serialize.b2h(hash160)
-        script      = tools.compile(script_text)
-    
-        return script
-    
 
     def get_tx_bytes(self, tx):
         """
@@ -654,46 +635,21 @@ class PollyAudit():
         """
         return "ok (" + self.polly.get_cmd_time() + ")"
 
-
-class UnsignedTxExt(UnsignedTx) :
-    """
-    UnsignedTx class extension for accelerating Polly signing flow tests.
-    """ 
-    
-    def signing_template(self) :
+    def __sign_fake(self, tx):
         """
-        Creates a transaction template.
-        """
-
-        temp_txs_in = []
-
-        for (_, unsigned_tx_out) in enumerate(self.unsigned_txs_out) :
-            
-            # In case concatenating two scripts ends up with two codeseparators,
-            # or an extra one at the end, this prevents all those possible incompatibilities.
-            tx_out_script = tools.delete_subscript(unsigned_tx_out.script, [opcodes.OP_CODESEPARATOR])
- 
-            temp_txs_in.append(TxIn(unsigned_tx_out.previous_hash, unsigned_tx_out.previous_index, tx_out_script))
-
-        tx = Tx(self.version, temp_txs_in, self.new_txs_out, self.lock_time)
-        
-        return tx
-    
-    def sign_fake(self, hash_type=SIGHASH_ALL):
-        """
-        Sign a standard transaction using a fake randomly generated signature.
+        Sign a transaction using a fake randomly generated signature.
         """
         
         # Create a fake ecdsa signature from 0x68 - 0x6b bytes
-        random_script = bytes([random.randint(0,0xFF) for _ in range(0, random.randint(0x68, 0x6b))])
+        rand_script = bytes([random.randint(0,0xFF) for _ in range(0, random.randint(0x68, 0x6b))])
 
-        new_txs_in = [TxIn(unsigned_tx_out.previous_hash, unsigned_tx_out.previous_index, random_script) 
-                      for (_, unsigned_tx_out) in enumerate(self.unsigned_txs_out)]
-        
-        tx = Tx(self.version, new_txs_in, self.new_txs_out, self.lock_time)
-        tx.txs_in = new_txs_in
-        return tx        
-    
+        tx.check_unspents()
+        for idx, tx_in in enumerate(tx.txs_in):
+            if tx.unspents[idx]:
+                tx_in.script = rand_script
+                
+        return tx
+
 
 def main():
     """
