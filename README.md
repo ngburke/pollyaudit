@@ -28,10 +28,10 @@ Installing on Windows
 
 4. Cython requires a C compiler. Follow the instructions at https://github.com/cython/cython/wiki/64BitCythonExtensionsOnWindows to install a free C compiler that will work on 32 or 64 bit machines.
 
-5. Open the SDK command window (Programs -> Microsoft Windows SDK v7.x -> Microsoft Windows SDK v7.x Command Prompt) and enter the commands below for a 64-bit machine (replace /x64 with /x86 for 32-bit):
+5. Open the SDK command window (Programs > Microsoft Windows SDK v7.x > Microsoft Windows SDK v7.x Command Prompt) and enter the commands below for a 64-bit machine. The setenv line can me modified for 32-bit machines by replacing /x64 with /x86.
 
-    set DISTUTILS_USE_SDK=1
-    setenv /x64 /release
+ * set DISTUTILS_USE_SDK=1
+ * setenv /x64 /release
 
 6. From the SDK command window, install cython (pip install cython)
 
