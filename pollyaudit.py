@@ -35,16 +35,17 @@ import random
 import hashlib
 import binascii
 
-from pollycom                       import pollycom
+from pollycom                import pollycom
 
 # Pycoin is our reference wallet
-from pycoin.pycoin                  import encoding
-from pycoin.pycoin.key.bip32        import Wallet
-from pycoin.pycoin.tx               import Spendable
-from pycoin.pycoin.tx.tx_utils      import create_signed_tx, create_tx
-from pycoin.pycoin.tx.TxOut         import standard_tx_out_script
-from pycoin.pycoin.tx.script        import der
-from pycoin.pycoin.ecdsa            import ecdsa, intbytes, secp256k1
+from pycoin                  import encoding
+from pycoin.key.bip32        import Wallet
+from pycoin.tx               import Spendable
+from pycoin.tx.tx_utils      import create_signed_tx, create_tx
+from pycoin.tx.TxOut         import standard_tx_out_script
+from pycoin.tx.script        import der
+from pycoin.ecdsa            import ecdsa, intbytes, secp256k1
+
 
 class PollyAudit():
     """
