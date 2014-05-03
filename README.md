@@ -24,7 +24,7 @@ Installing on Windows
 
 2. Clone cython-hidapi (https://github.com/ngburke/cython-hidapi)
 
-3. Clone pollyaudit (https://github.com/ngburke/)
+3. Clone pollyaudit (https://github.com/ngburke/pollyaudit)
 
 4. Cython requires a C compiler. Follow the instructions at https://github.com/cython/cython/wiki/64BitCythonExtensionsOnWindows to install a free C compiler that will work on 32 or 64 bit machines.
 
