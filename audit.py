@@ -35,7 +35,7 @@ import random
 import hashlib
 import binascii
 
-from pollycom                import pollycom
+from pollycom.com            import PollyCom
 
 # Pycoin is our reference wallet
 from pycoin                  import encoding
@@ -58,7 +58,7 @@ class PollyAudit():
         self.wallet = Wallet.from_master_secret(bytes(0))
         
         # Set up a Polly communication pipe
-        self.polly = pollycom.PollyCom()
+        self.polly = PollyCom()
         
         
     #
