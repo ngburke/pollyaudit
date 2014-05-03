@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+
 """
 Audit and test module for Polly, a deterministic Bitcoin hardware wallet adhering to BIP32.
 
