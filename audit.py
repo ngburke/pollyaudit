@@ -29,12 +29,14 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+import os
 import sys
 import io
 import random
 import hashlib
 import binascii
 
+from mnemonic                import Mnemonic
 from pollycom.com            import PollyCom
 
 # Pycoin is our reference wallet
@@ -52,8 +54,11 @@ class PollyAudit():
     Auditing tests and utilities for Polly.
     """
     
-    def __init__(self):
+    def __init__(self, wordfile = 'wordlist.txt'):
         
+        # Read create the mnemonic wordlist object
+        self.mnemonic = Mnemonic("english")
+    
         # Set up a default reference wallet
         self.wallet = Wallet.from_master_secret(bytes(0))
         
@@ -65,23 +70,28 @@ class PollyAudit():
     # Tests
     #
         
-    def test_set_seed(self, seed):
+    def test_set_seed(self, wordlist):
         """
         Sets the wallet seed for Polly and the reference wallet.
         
         Note: Subsequent tests will use the seed set by this routine.
         
-        seed -  a 32 t0 64 byte 'bytes' object containing the seed.
+        wordlist -  a space separated string of 18 mnemonic words from the Polly wordlist.
+                    Note: the checksum must be correct (part of the 18th word) - see BIP0039.
+                    gen_wordlist can be used to generate a wordlist including the proper checksum.
         """
+        
+        assert len(wordlist.split(" ")) == 18, "expecting 18 words"
+        assert self.mnemonic.check(wordlist) == True, "invalid word list"
         
         print ("{:30}".format("Set seed"), end='')
         
         # Set polly
-        self.polly.send_set_master_seed(seed)
-       
+        self.polly.send_set_master_seed(wordlist)
         print (self.__outok())
         
         # Set the reference wallet
+        seed = self.mnemonic.to_seed(wordlist)
         self.wallet = Wallet.from_master_secret(seed)
         
         
@@ -556,6 +566,20 @@ class PollyAudit():
         return s.getvalue()
 
 
+    def gen_wordlist(self, seed):
+        """
+        Generates a polly mnemonic wordlist from a seed, including the checksum.
+        
+        seed -  a string of 24 hex bytes (for a strength of 192 bits)
+        
+        Returns a space separated string of 18 words from the wordlist.
+        """
+        
+        assert len(seed) == 24, "incorrect seed length, expecting 24 bytes"
+        
+        return self.mnemonic.to_mnemonic(seed)
+
+
     def hexstr(self, data):
         """
         Takes a bytes object and returns a packed hex string.
@@ -664,7 +688,7 @@ def main():
     audit = PollyAudit()
     
     try:
-    
+        
         print()
         print("Internal coherency tests")
         print("------------------------")
@@ -683,9 +707,7 @@ def main():
         print("Polly test 1")
         print("------------")
         
-        seed = bytes([0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f])
-        
-        audit.test_set_seed(seed)
+        audit.test_set_seed("skill versus increase replace april inherent fiction bundle minute oxygen promote sheriff weekend being welcome operator genre simple")
         audit.test_key(keynum = 0,        master = True)
         audit.test_key(keynum = 1,        master = False)
         audit.test_key(keynum = 1000,     master = False)
@@ -708,12 +730,7 @@ def main():
         print("Polly test 2")
         print("------------")
         
-        seed   = bytes([0xff,0xfc,0xf9,0xf6,0xf3,0xf0,0xed,0xea,0xe7,0xe4,0xe1,0xde,0xdb,0xd8,0xd5,0xd2,
-                        0xcf,0xcc,0xc9,0xc6,0xc3,0xc0,0xbd,0xba,0xb7,0xb4,0xb1,0xae,0xab,0xa8,0xa5,0xa2,
-                        0x9f,0x9c,0x99,0x96,0x93,0x90,0x8d,0x8a,0x87,0x84,0x81,0x7e,0x7b,0x78,0x75,0x72,
-                        0x6f,0x6c,0x69,0x66,0x63,0x60,0x5d,0x5a,0x57,0x54,0x51,0x4e,0x4b,0x48,0x45,0x42])
-        
-        audit.test_set_seed(seed)
+        audit.test_set_seed(audit.gen_wordlist(os.urandom(24)))
         audit.test_key(keynum = 0,        master = True)
         audit.test_key(keynum = 2,        master = False)
         audit.test_key(keynum = 2000,     master = False)
