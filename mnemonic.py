@@ -101,4 +101,4 @@ class Mnemonic(object):
 	def to_seed(cls, mnemonic, passphrase = ''):
 		mnemonic = cls.normalize_string(mnemonic)
 		passphrase = cls.normalize_string(passphrase)
-		return PBKDF2(mnemonic, u'polly' + passphrase, iterations=PBKDF2_ROUNDS, macmodule=hmac, digestmodule=hashlib.sha512).read(64)
+		return PBKDF2(mnemonic, u'polly' + passphrase, iterations=PBKDF2_ROUNDS, macmodule=hmac, digestmodule=hashlib.sha256).read(64)
