@@ -54,6 +54,7 @@ class PollyAudit():
     Auditing tests and utilities for Polly.
     """
     
+    
     def __init__(self, wordfile = 'wordlist.txt'):
         
         # Read create the mnemonic wordlist object
@@ -65,6 +66,8 @@ class PollyAudit():
         # Set up a Polly communication pipe
         self.polly = PollyCom()
         
+        # Default print padding
+        self.PAD = "{:35}"
         
     #
     # Tests
@@ -84,7 +87,7 @@ class PollyAudit():
         assert len(wordlist.split(" ")) == 18, "expecting 18 words"
         assert self.mnemonic.check(wordlist) == True, "invalid word list"
         
-        print ("{:30}".format("Set seed"), end='')
+        print (self.PAD.format("Set seed"), end='')
         
         # Set polly
         self.polly.send_set_master_seed(wordlist)
@@ -95,28 +98,36 @@ class PollyAudit():
         self.wallet = Wallet.from_master_secret(seed)
         
         
-    def test_key(self, keynum, master):
+    def test_key(self, keytype, account = 0, chain = 0, address = 0):
         """
         Performs a public key retrieval test, comparing Polly's key against the reference wallet.
-        
-        keynum -  the key index to retrieve. Ignored if master == True.
-        master -  set to True to retrieve the master public key.
+       
+        keytype - Type of key to retrieve, valid values are KEY_MASTER, KEY_ACCOUNT, KEY_CHAIN, or KEY_ADDRESS.
+        account - Account to use for type KEY_ACCOUNT, KEY_CHAIN, KEY_ADDRESS.
+        chain   - Chain to use for type KEY_CHAIN, KEY_ADDRESS.
+        address - Index (0 - 0x7FFFFFFF) to use for type KEY_ADDRESS.
         """
         
-        if master == True :
-            print("{:30}".format("Get master key"), end='')
-            
-            # Force the keynum to 0 for the master wallet
-            keynum = 0
+        assert address < 0x80000000, "hardened address keys are not supported"
+        
+        if keytype == PollyCom.KEY_MASTER:
+            print(self.PAD.format("Get master key"), end='')
             refkey = self.wallet
-        else:
-            print("{:30}".format("Get child key " + str(keynum)), end='')
             
-            # Get the subkey
-            refkey = self.wallet.subkey(keynum)
+        elif keytype == PollyCom.KEY_ACCOUNT:
+            print(self.PAD.format("Get account key m/" + str(account) + "h"), end='')
+            refkey = self.wallet.subkey(account, is_hardened = True)
+            
+        elif keytype == PollyCom.KEY_CHAIN:
+            print(self.PAD.format("Get chain key   m/" + str(account) + "h/" + str(chain)), end='')
+            refkey = self.wallet.subkey(account, is_hardened = True).subkey(chain)
+            
+        else: # keytype == PollyCom.KEY_ADDRESS
+            print(self.PAD.format("Get address key m/" + str(account) + "h/" + str(chain) + "/" + str(address)), end='')
+            refkey = self.wallet.subkey(account, is_hardened = True).subkey(chain).subkey(address)
     
         # Get keypair from Polly 
-        (pubx, puby) = self.polly.send_get_public_key(keynum, master)
+        (pubx, puby) = self.polly.send_get_public_key(keytype, account, chain, address)
         
         print (self.__outok())
         
@@ -154,6 +165,8 @@ class PollyAudit():
         
         total_in_satoshi = sum(satoshi for _, satoshi in keynums_satoshi) 
         fee_satoshi      = total_in_satoshi - out_satoshi - change_satoshi
+        chain0           = self.wallet.subkey(0, is_hardened = True).subkey(0)
+        chain1           = self.wallet.subkey(0, is_hardened = True).subkey(1)
         
         assert total_in_satoshi >= out_satoshi + change_satoshi
         assert len(keynums_satoshi) <= 32
@@ -162,8 +175,8 @@ class PollyAudit():
         # Step 1: send the inputs and outputs to use in the signed tx
         #
         
-        # Create the (key num, compressed public key) tuple
-        keys = [(keynum, encoding.public_pair_to_sec(self.wallet.subkey(keynum).public_pair)) 
+        # Create the (key num, compressed public key) tuple, input keys assume an m/0h/0/keynum path for now. 
+        keys = [(keynum, encoding.public_pair_to_sec(chain0.subkey(keynum).public_pair)) 
                 for (keynum, _) in keynums_satoshi] 
         
         # Convert base58 address to raw hex address
@@ -172,14 +185,14 @@ class PollyAudit():
         print()
         print("Sign tx parameters:", "")
         for i, (keynum, satoshi) in enumerate(keynums_satoshi):
-            print("{:<10}{:16.8f} btc @ key {}".format (" inputs" if 0 == i else "", satoshi          / 100000000, keynum))
+            print("{:<10}{:16.8f} btc < key {}".format (" inputs" if 0 == i else "", satoshi          / 100000000, keynum))
         print("{:<10}{:16.8f} btc > {}".format         (" output",                   out_satoshi      / 100000000, self.hexstr(out_addr_160)))
         print("{:<10}{:16.8f} btc > key {}".format     (" change",                   change_satoshi   / 100000000, change_keynum))
         print("{:<10}{:16.8f} btc".format              (" fee",                      fee_satoshi      / 100000000))
         print("{:<10}{:16.8f} btc".format              (" total",                    total_in_satoshi / 100000000))
        
         print()
-        print("{:30}".format("Send tx parameters"), end='')
+        print(self.PAD.format("Send tx parameters"), end='')
         
         # ---> send to Polly 
         self.polly.send_sign_tx(keys, out_addr_160, out_satoshi, change_keynum, change_satoshi) 
@@ -214,7 +227,7 @@ class PollyAudit():
                 prevtx_outputs_satoshi.append((keynum, satoshi))
     
                 # Create output script
-                addr   = self.wallet.subkey(keynum, False, True).bitcoin_address()
+                addr   = chain0.subkey(keynum, as_private = True).bitcoin_address()
                 script = standard_tx_out_script(addr)
     
                 # Capture some info we'll use later to verify the signed tx
@@ -230,7 +243,7 @@ class PollyAudit():
             prevtx = self.create_prev_tx(win                 = Wallet.from_master_secret(bytes(0)), # create a dummy wallet 
                                          in_keynum           = list(range(0, random.choice(prevtx_inputs))), 
                                          sources_per_input   = 1, 
-                                         wout                = self.wallet, 
+                                         wout                = chain0, 
                                          out_keynum_satoshi  = prevtx_outputs_satoshi, 
                                          fees_satoshi        = random.randint(100, 1000))
             
@@ -244,7 +257,7 @@ class PollyAudit():
             # Create the index table that matches a keynum index with an ouput index in this prev tx
             idx_table = [(keynum_idx + cur, outidx) for keynum_idx, (_, _, _, _, outidx) in enumerate(prevtx_info[cur:])] 
             
-            print("{:30}".format("Send prev tx "), end='')
+            print(self.PAD.format("Send prev tx "), end='')
             
             # ---> send to Polly
             self.polly.send_prev_tx(idx_table, prevtx)
@@ -262,24 +275,26 @@ class PollyAudit():
         
         # Make sure that the inputs add up correctly, and prep the input_sources for reference wallet signing
         for (keynum, satoshi, script, prevtx_hash, outidx) in prevtx_info:
-            
             spendables.append(Spendable(satoshi, script, prevtx_hash, outidx))
-            wifs.append(self.wallet.subkey(keynum, False, True).wif())
+            wifs.append(chain0.subkey(keynum, as_private = True).wif())
         
-        change_addr = self.wallet.subkey(change_keynum).bitcoin_address()
+        change_addr = chain1.subkey(change_keynum).bitcoin_address()
         
         payables = [(out_addr, out_satoshi), (change_addr, change_satoshi)]
         
         print()
-        print("{:30}".format("Make reference signature"))
+        print(self.PAD.format("Make reference signature"))
     
         signed_tx     = create_signed_tx(spendables, payables, wifs, fee_satoshi)
         signed_tx     = self.get_tx_bytes(signed_tx)
         
-        print("{:30}".format("Get signed tx"), end='', flush = True)
+        print(self.PAD.format("Get signed tx"), end='', flush = True)
         
         # <--- get the signed tx from Polly
         polly_signed_tx = self.polly.send_get_signed_tx()
+
+        #print(self.txstr(polly_signed_tx))
+        #print(self.txstr(signed_tx))
         
         print(self.__outok())
         
@@ -303,25 +318,25 @@ class PollyAudit():
         assert m.bitcoin_address()                                == "15mKKb2eos1hWa6tisdPwwDC1a5J1y9nma"
         assert m.wif()                                            == "L52XzL2cMkHxqxBXRyEpnPQZGUs3uKiL3R11XbAdHigRzDozKZeW"
 
-        m0p = m.subkey(is_hardened=True)
-        assert m0p.wallet_key()                                   == "xpub68Gmy5EdvgibQVfPdqkBBCHxA5htiqg55crXYuXoQRKfDBFA1WEjWgP6LHhwBZeNK1VTsfTFUHCdrfp1bgwQ9xv5ski8PX9rL2dZXvgGDnw"
-        assert m0p.wallet_key(as_private=True)                    == "xprv9uHRZZhk6KAJC1avXpDAp4MDc3sQKNxDiPvvkX8Br5ngLNv1TxvUxt4cV1rGL5hj6KCesnDYUhd7oWgT11eZG7XnxHrnYeSvkzY7d2bhkJ7"
+        m0h = m.subkey(is_hardened=True)
+        assert m0h.wallet_key()                                   == "xpub68Gmy5EdvgibQVfPdqkBBCHxA5htiqg55crXYuXoQRKfDBFA1WEjWgP6LHhwBZeNK1VTsfTFUHCdrfp1bgwQ9xv5ski8PX9rL2dZXvgGDnw"
+        assert m0h.wallet_key(as_private=True)                    == "xprv9uHRZZhk6KAJC1avXpDAp4MDc3sQKNxDiPvvkX8Br5ngLNv1TxvUxt4cV1rGL5hj6KCesnDYUhd7oWgT11eZG7XnxHrnYeSvkzY7d2bhkJ7"
 
-        m0p1 = m0p.subkey(i=1)
-        assert m0p1.wallet_key()                                  == "xpub6ASuArnXKPbfEwhqN6e3mwBcDTgzisQN1wXN9BJcM47sSikHjJf3UFHKkNAWbWMiGj7Wf5uMash7SyYq527Hqck2AxYysAA7xmALppuCkwQ"
-        assert m0p1.wallet_key(as_private=True)                   == "xprv9wTYmMFdV23N2TdNG573QoEsfRrWKQgWeibmLntzniatZvR9BmLnvSxqu53Kw1UmYPxLgboyZQaXwTCg8MSY3H2EU4pWcQDnRnrVA1xe8fs"
+        m0h1 = m0h.subkey(i=1)
+        assert m0h1.wallet_key()                                  == "xpub6ASuArnXKPbfEwhqN6e3mwBcDTgzisQN1wXN9BJcM47sSikHjJf3UFHKkNAWbWMiGj7Wf5uMash7SyYq527Hqck2AxYysAA7xmALppuCkwQ"
+        assert m0h1.wallet_key(as_private=True)                   == "xprv9wTYmMFdV23N2TdNG573QoEsfRrWKQgWeibmLntzniatZvR9BmLnvSxqu53Kw1UmYPxLgboyZQaXwTCg8MSY3H2EU4pWcQDnRnrVA1xe8fs"
 
-        m0p1_1_2p = m0p1.subkey(i=2, is_hardened=True)
-        assert m0p1_1_2p.wallet_key()                             == "xpub6D4BDPcP2GT577Vvch3R8wDkScZWzQzMMUm3PWbmWvVJrZwQY4VUNgqFJPMM3No2dFDFGTsxxpG5uJh7n7epu4trkrX7x7DogT5Uv6fcLW5"
-        assert m0p1_1_2p.wallet_key(as_private=True)              == "xprv9z4pot5VBttmtdRTWfWQmoH1taj2axGVzFqSb8C9xaxKymcFzXBDptWmT7FwuEzG3ryjH4ktypQSAewRiNMjANTtpgP4mLTj34bhnZX7UiM"
+        m0h1_1_2h = m0h1.subkey(i=2, is_hardened=True)
+        assert m0h1_1_2h.wallet_key()                             == "xpub6D4BDPcP2GT577Vvch3R8wDkScZWzQzMMUm3PWbmWvVJrZwQY4VUNgqFJPMM3No2dFDFGTsxxpG5uJh7n7epu4trkrX7x7DogT5Uv6fcLW5"
+        assert m0h1_1_2h.wallet_key(as_private=True)              == "xprv9z4pot5VBttmtdRTWfWQmoH1taj2axGVzFqSb8C9xaxKymcFzXBDptWmT7FwuEzG3ryjH4ktypQSAewRiNMjANTtpgP4mLTj34bhnZX7UiM"
 
-        m0p1_1_2p_2 = m0p1_1_2p.subkey(i=2)
-        assert m0p1_1_2p_2.wallet_key()                           == "xpub6FHa3pjLCk84BayeJxFW2SP4XRrFd1JYnxeLeU8EqN3vDfZmbqBqaGJAyiLjTAwm6ZLRQUMv1ZACTj37sR62cfN7fe5JnJ7dh8zL4fiyLHV"
-        assert m0p1_1_2p_2.wallet_key(as_private=True)            == "xprvA2JDeKCSNNZky6uBCviVfJSKyQ1mDYahRjijr5idH2WwLsEd4Hsb2Tyh8RfQMuPh7f7RtyzTtdrbdqqsunu5Mm3wDvUAKRHSC34sJ7in334"
+        m0h1_1_2h_2 = m0h1_1_2h.subkey(i=2)
+        assert m0h1_1_2h_2.wallet_key()                           == "xpub6FHa3pjLCk84BayeJxFW2SP4XRrFd1JYnxeLeU8EqN3vDfZmbqBqaGJAyiLjTAwm6ZLRQUMv1ZACTj37sR62cfN7fe5JnJ7dh8zL4fiyLHV"
+        assert m0h1_1_2h_2.wallet_key(as_private=True)            == "xprvA2JDeKCSNNZky6uBCviVfJSKyQ1mDYahRjijr5idH2WwLsEd4Hsb2Tyh8RfQMuPh7f7RtyzTtdrbdqqsunu5Mm3wDvUAKRHSC34sJ7in334"
 
-        m0p1_1_2p_2_1000000000 = m0p1_1_2p_2.subkey(i=1000000000)
-        assert m0p1_1_2p_2_1000000000.wallet_key()                == "xpub6H1LXWLaKsWFhvm6RVpEL9P4KfRZSW7abD2ttkWP3SSQvnyA8FSVqNTEcYFgJS2UaFcxupHiYkro49S8yGasTvXEYBVPamhGW6cFJodrTHy"
-        assert m0p1_1_2p_2_1000000000.wallet_key(as_private=True) == "xprvA41z7zogVVwxVSgdKUHDy1SKmdb533PjDz7J6N6mV6uS3ze1ai8FHa8kmHScGpWmj4WggLyQjgPie1rFSruoUihUZREPSL39UNdE3BBDu76"
+        m0h1_1_2h_2_1000000000 = m0h1_1_2h_2.subkey(i=1000000000)
+        assert m0h1_1_2h_2_1000000000.wallet_key()                == "xpub6H1LXWLaKsWFhvm6RVpEL9P4KfRZSW7abD2ttkWP3SSQvnyA8FSVqNTEcYFgJS2UaFcxupHiYkro49S8yGasTvXEYBVPamhGW6cFJodrTHy"
+        assert m0h1_1_2h_2_1000000000.wallet_key(as_private=True) == "xprvA41z7zogVVwxVSgdKUHDy1SKmdb533PjDz7J6N6mV6uS3ze1ai8FHa8kmHScGpWmj4WggLyQjgPie1rFSruoUihUZREPSL39UNdE3BBDu76"
 
         
         # Vector 2
@@ -493,7 +508,7 @@ class PollyAudit():
         for keynum in in_keynum:
     
             # Grab the address for the current key num
-            addr = win.subkey(keynum, False, True).bitcoin_address();
+            addr = win.subkey(keynum, as_private = True).bitcoin_address();
             
             # Generate fake sources for funding the input coin
             spendables.extend(self.fake_sources_for_address(addr, sources_per_input, satoshi_per_input))
@@ -708,11 +723,15 @@ def main():
         print("------------")
         
         audit.test_set_seed("skill versus increase replace april inherent fiction bundle minute oxygen promote sheriff weekend being welcome operator genre simple")
-        audit.test_key(keynum = 0,        master = True)
-        audit.test_key(keynum = 1,        master = False)
-        audit.test_key(keynum = 1000,     master = False)
-        audit.test_key(keynum = 300000,   master = False)
-        audit.test_key(keynum = 12345678, master = False)
+        audit.test_key(PollyCom.KEY_MASTER)
+        audit.test_key(PollyCom.KEY_ACCOUNT, 0)
+        audit.test_key(PollyCom.KEY_CHAIN,   0, 0)
+        audit.test_key(PollyCom.KEY_CHAIN,   0, 1)
+        
+        audit.test_key(PollyCom.KEY_ADDRESS, 0, 0, 1)
+        audit.test_key(PollyCom.KEY_ADDRESS, 0, 0, 1000)
+        audit.test_key(PollyCom.KEY_ADDRESS, 0, 1, 300000)
+        audit.test_key(PollyCom.KEY_ADDRESS, 0, 1, 12345678)
         
         audit.test_sign(keynums_satoshi  = [(1, 100000), 
                                             (2, 110000)],
@@ -731,11 +750,15 @@ def main():
         print("------------")
         
         audit.test_set_seed(audit.gen_wordlist(os.urandom(24)))
-        audit.test_key(keynum = 0,        master = True)
-        audit.test_key(keynum = 2,        master = False)
-        audit.test_key(keynum = 2000,     master = False)
-        audit.test_key(keynum = 200000,   master = False)
-        audit.test_key(keynum = 23456789, master = False)
+        audit.test_key(PollyCom.KEY_MASTER)
+        audit.test_key(PollyCom.KEY_ACCOUNT, 0)
+        audit.test_key(PollyCom.KEY_CHAIN,   0, 0)
+        audit.test_key(PollyCom.KEY_CHAIN,   0, 1)
+        
+        audit.test_key(PollyCom.KEY_ADDRESS, 0, 0, 23456789)
+        audit.test_key(PollyCom.KEY_ADDRESS, 0, 0, 200000)
+        audit.test_key(PollyCom.KEY_ADDRESS, 0, 1, 2000)
+        audit.test_key(PollyCom.KEY_ADDRESS, 0, 1, 2)
         
         # Sign a tx with the max number supported by polly (32).
         # Total input value is 52800000 satoshis
