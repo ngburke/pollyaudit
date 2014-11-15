@@ -10,9 +10,11 @@ Dependencies
 ------------
 
 * Python 3.x
-* Cython
-* cython-hidapi (https://github.com/ngburke/cython-hidapi)
 * pycoin (https://github.com/richardkiss/pycoin)
+* pbkdf2
+* pyserial (for Bluetooth)
+* Cython (for USB)
+* cython-hidapi (https://github.com/ngburke/cython-hidapi)
 
 
 Installing on Windows
