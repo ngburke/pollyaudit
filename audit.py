@@ -113,29 +113,38 @@ class PollyAudit():
         if keytype == PollyCom.KEY_MASTER:
             print(self.PAD.format("Get master key"), end='')
             refkey = self.wallet
+            check_chaincode = False
             
         elif keytype == PollyCom.KEY_ACCOUNT:
             print(self.PAD.format("Get account key m/" + str(account) + "h"), end='')
             refkey = self.wallet.subkey(account, is_hardened = True)
+            check_chaincode = True
             
         elif keytype == PollyCom.KEY_CHAIN:
             print(self.PAD.format("Get chain key   m/" + str(account) + "h/" + str(chain)), end='')
             refkey = self.wallet.subkey(account, is_hardened = True).subkey(chain)
+            check_chaincode = True
             
         else: # keytype == PollyCom.KEY_ADDRESS
             print(self.PAD.format("Get address key m/" + str(account) + "h/" + str(chain) + "/" + str(address)), end='')
             refkey = self.wallet.subkey(account, is_hardened = True).subkey(chain).subkey(address)
+            check_chaincode = False
     
         # Get keypair from Polly 
-        (pubx, puby) = self.polly.send_get_public_key(keytype, account, chain, address)
-        
+        (pubx, puby, chaincode) = self.polly.send_get_public_key(keytype, account, chain, address)
+
         print (self.__outok())
-        
+
         # Check against reference wallet
         addr       = encoding.public_pair_to_hash160_sec((pubx, puby))
         addr_check = encoding.public_pair_to_hash160_sec(refkey.public_pair)
         
         assert addr == addr_check, "public key mismatch\nexpected: " + self.hexstr(addr_check) + "\nactual:   " + self.hexstr(addr) 
+        
+        if check_chaincode == True :
+            assert refkey.chain_code == chaincode, "chain code mismatch\nexpected: " + self.hexstr(refkey.chain_code) + "\nactual:   " + self.hexstr(chaincode) 
+            
+        
 
 
     def test_sign(self, keynums_satoshi, out_addr, out_satoshi, change_keynum, change_satoshi, prevtx_keynums, prevtx_outputs, prevtx_inputs):
@@ -719,7 +728,7 @@ def main():
 
         # BIP 32 test vectors:
         print()
-        print("Polly test 1")
+        print("Polly test vector 1")
         print("------------")
         
         audit.test_set_seed("skill versus increase replace april inherent fiction bundle minute oxygen promote sheriff weekend being welcome operator genre simple")
@@ -746,7 +755,7 @@ def main():
         
 
         print()
-        print("Polly test 2")
+        print("Polly test vector 2")
         print("------------")
         
         audit.test_set_seed(audit.gen_wordlist(os.urandom(24)))
@@ -803,6 +812,45 @@ def main():
                         prevtx_outputs   = [2,4,6],
                         prevtx_inputs    = [2]) 
         
+        print()
+        print("Polly signing stress test")
+        print("------------")
+        
+        for seed in range(1000) :
+            
+                print ("\n--> Seed", seed)
+                random.seed(seed)
+            
+                keynums_satoshi = []
+                total_satoshi = 0
+                
+                # Create 1 - 32 input key numbers and corresponding unspent value
+                for _ in range(random.randint(1, 33)) :
+                    keynum = random.randint(1, 0x7FFFFFFF)
+                    satoshi = random.randint(100000, 100000000000)
+                    
+                    keynums_satoshi.append((keynum, satoshi))
+                    
+                    total_satoshi += satoshi
+                
+                # Pick a random fraction of the total input value to spend
+                out_satoshi = int(float(total_satoshi) * random.uniform(0.1, 1))
+                
+                # Pick a random fraction of the remaining to send as change, the rest will be fees
+                change_satoshi = int(float(total_satoshi - out_satoshi) * random.uniform(0.5, 0.95))
+                
+                
+                audit.test_sign(keynums_satoshi  = keynums_satoshi, 
+                                out_addr         = "1Q6eZELkUUcbQ4Rn68Qm3AfDriBvuxz5Qr", 
+                                out_satoshi      = out_satoshi,
+                                change_keynum    = random.randint(1, 0x7FFFFFFF), 
+                                change_satoshi   = change_satoshi,
+
+                                prevtx_keynums   = [1,1,1,2,3,6],
+                                prevtx_outputs   = [1,1,1,2,3,6],
+                                prevtx_inputs    = [1,1,1,2,3,6]) 
+                    
+            
         print("\nPASS: Tests completed successfully")
     
     except KeyboardInterrupt:
