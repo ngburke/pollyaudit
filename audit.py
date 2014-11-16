@@ -729,7 +729,7 @@ def main():
         # BIP 32 test vectors:
         print()
         print("Polly test vector 1")
-        print("------------")
+        print("-------------------")
         
         audit.test_set_seed("skill versus increase replace april inherent fiction bundle minute oxygen promote sheriff weekend being welcome operator genre simple")
         audit.test_key(PollyCom.KEY_MASTER)
@@ -756,7 +756,7 @@ def main():
 
         print()
         print("Polly test vector 2")
-        print("------------")
+        print("-------------------")
         
         audit.test_set_seed(audit.gen_wordlist(os.urandom(24)))
         audit.test_key(PollyCom.KEY_MASTER)
@@ -814,7 +814,7 @@ def main():
         
         print()
         print("Polly signing stress test")
-        print("------------")
+        print("-------------------------")
         
         for seed in range(1000) :
             
