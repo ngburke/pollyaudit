@@ -483,6 +483,18 @@ class PollyAudit():
     #
     # Utilities
     #
+    def fw_update(self, fwfile):
+        """
+        Updates device firmware.
+       
+        fwfile  - Path to and name of the firmware file to use.
+        """
+        
+        if self.polly.send_fw_download(fwfile) :
+            print("Update succeeded, exiting")
+        else :
+            print("Update failed, exiting")
+        
         
     def create_prev_tx(self, win, in_keynum, sources_per_input, wout, out_keynum_satoshi, fees_satoshi):
         """
@@ -713,6 +725,16 @@ def main():
     
     try:
         
+        fwfile = sys.argv[1];
+     
+        if fwfile:
+            print()
+            print("Updating Firmware")
+            print("-----------------")
+
+            audit.fw_update(fwfile)
+            sys.exit(0)
+   
         print()
         print("Internal coherency tests")
         print("------------------------")
@@ -857,5 +879,7 @@ def main():
         print ("\n User exit")
         
 if __name__ == '__main__':
+    
+    # Execute the main test code
     status = main()
     sys.exit(status)
