@@ -490,10 +490,7 @@ class PollyAudit():
         fwfile  - Path to and name of the firmware file to use.
         """
         
-        if self.polly.send_fw_download(fwfile) :
-            print("Update succeeded, exiting")
-        else :
-            print("Update failed, exiting")
+        self.polly.send_fw_download(fwfile)
         
         
     def create_prev_tx(self, win, in_keynum, sources_per_input, wout, out_keynum_satoshi, fees_satoshi):
@@ -725,14 +722,15 @@ def main():
     
     try:
         
-        fwfile = sys.argv[1];
-     
-        if fwfile:
+        if len(sys.argv) > 1:
+            fwfile = sys.argv[1];
+
             print()
             print("Updating Firmware")
             print("-----------------")
 
             audit.fw_update(fwfile)
+            print("Success, exiting")
             sys.exit(0)
    
         print()
