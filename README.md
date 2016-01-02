@@ -1,7 +1,9 @@
 pollyaudit
 ==========
 
-Audit and test module for Polly, a deterministic Bitcoin hardware wallet adhering to [BIP32]. Polly development has been put on hold indefinitely. See the project wiki page for more information (https://github.com/ngburke/polly/wiki).
+Audit and test module for Polly, a deterministic Bitcoin hardware wallet adhering to [BIP32]. 
+
+Polly development has been put on hold indefinitely. See the project wiki page for more information (https://github.com/ngburke/polly/wiki).
 
 Tested with Python 3.3 and 3.4.
 
